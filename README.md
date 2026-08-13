@@ -143,4 +143,4 @@ If you want to publish a tagged release, use the tag command above.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License — see [LICENSE](LICENSE).
