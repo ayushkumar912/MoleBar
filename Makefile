@@ -12,7 +12,7 @@ all: app
 ## background process when run directly — mainly useful for `make run`).
 build:
 	mkdir -p $(BUILD_DIR)
-	go build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/$(BIN_NAME) ./cmd/molebar
+	go build -buildvcs=false -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/$(BIN_NAME) ./cmd/molebar
 
 ## app: package the binary into a proper .app bundle with LSUIElement set,
 ## so it launches from Spotlight/Applications and only appears in the menu

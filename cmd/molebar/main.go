@@ -11,6 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -21,12 +24,81 @@ import (
 var (
 	interval  = flag.Duration("interval", 5*time.Second, "refresh interval")
 	binPath   = flag.String("mo-bin", "", `path to the "mo" executable (default: resolve "mo" from $PATH)`)
-	titleMode = flag.String("title", "sys", `what to show in the menu bar title: "sys" (CPU/MEM), "net" (↓/↑ rates), or "both"`)
+	titleMode = flag.String("title", "", `what to show in the menu bar title: "sys" (CPU/MEM), "net" (↓/↑ rates), or "both"`)
 )
+
+func normalizeDisplayMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "net", "network":
+		return "net"
+	case "both":
+		return "both"
+	default:
+		return "sys"
+	}
+}
+
+func defaultDisplayMode() string {
+	if mode, ok := readSavedDisplayMode(); ok {
+		return normalizeDisplayMode(mode)
+	}
+	return "sys"
+}
+
+func readSavedDisplayMode() (string, bool) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(configDir, "molebar", "display_mode")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(data)), true
+}
+
+func saveDisplayMode(mode string) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Printf("molebar: failed to resolve config dir: %v", err)
+		return
+	}
+	path := filepath.Join(configDir, "molebar", "display_mode")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("molebar: failed to create config dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(normalizeDisplayMode(mode)), 0o644); err != nil {
+		log.Printf("molebar: failed to save display mode: %v", err)
+	}
+}
 
 func main() {
 	flag.Parse()
+	if *titleMode == "" {
+		*titleMode = defaultDisplayMode()
+	} else {
+		*titleMode = normalizeDisplayMode(*titleMode)
+	}
 	systray.Run(onReady, onExit)
+}
+
+func displayLabel(mode string) string {
+	switch normalizeDisplayMode(mode) {
+	case "net":
+		return "Network"
+	case "both":
+		return "Both"
+	default:
+		return "System"
+	}
+}
+
+func setDisplayModeLabel(item *systray.MenuItem, mode string) {
+	if item != nil {
+		item.SetTitle("Display: " + displayLabel(mode))
+	}
 }
 
 func onReady() {
@@ -43,6 +115,11 @@ func onReady() {
 	mUp := systray.AddMenuItem("↑ —", "Current upload rate")
 	mSession := systray.AddMenuItem("Session: —", "Estimated data transferred since molebar launched")
 	mSessionReset := systray.AddMenuItem("Reset session totals", "Zero out the session download/upload counters")
+	systray.AddSeparator()
+	mDisplay := systray.AddMenuItem("Display: "+displayLabel(*titleMode), "Choose what to show in the menu bar")
+	mDisplaySystem := mDisplay.AddSubMenuItem("System", "Show CPU and memory")
+	mDisplayNetwork := mDisplay.AddSubMenuItem("Network", "Show download/upload speed")
+	mDisplayBoth := mDisplay.AddSubMenuItem("Both", "Show CPU, memory, and network")
 	systray.AddSeparator()
 	mHealth := systray.AddMenuItem("Health: —", "")
 	mUpdated := systray.AddMenuItem("Updated: —", "")
@@ -63,6 +140,25 @@ func onReady() {
 		sessionTxBytes float64
 		lastTick       = time.Now()
 	)
+
+	setDisplayMode := func(mode string) {
+		*titleMode = normalizeDisplayMode(mode)
+		saveDisplayMode(*titleMode)
+		setDisplayModeLabel(mDisplay, *titleMode)
+		mDisplaySystem.Uncheck()
+		mDisplayNetwork.Uncheck()
+		mDisplayBoth.Uncheck()
+		switch *titleMode {
+		case "net":
+			mDisplayNetwork.Check()
+		case "both":
+			mDisplayBoth.Check()
+		default:
+			mDisplaySystem.Check()
+		}
+	}
+
+	setDisplayMode(*titleMode)
 
 	refresh := func() {
 		s, err := fetcher.Fetch()
@@ -138,6 +234,12 @@ func onReady() {
 			case <-mSessionReset.ClickedCh:
 				sessionRxBytes, sessionTxBytes = 0, 0
 				mSession.SetTitle("Session: ↓0 B ↑0 B")
+			case <-mDisplaySystem.ClickedCh:
+				setDisplayMode("sys")
+			case <-mDisplayNetwork.ClickedCh:
+				setDisplayMode("net")
+			case <-mDisplayBoth.ClickedCh:
+				setDisplayMode("both")
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return

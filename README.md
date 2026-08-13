@@ -17,6 +17,10 @@ CPU 12% MEM 67%   ← menu bar title (default; switch to net rates or both — s
 ├── ↑ 340 KB/s
 ├── Session: ↓842.1 MB ↑112.4 MB
 ├── Reset session totals
+├── Display: System
+│   ├── System
+│   ├── Network
+│   └── Both
 ├── ──────────────
 ├── Health: 100 (Excellent)
 ├── Updated: 14:32:07
@@ -72,6 +76,10 @@ molebar -interval=5s -mo-bin=/opt/homebrew/bin/mo -title=net
   - `net` — `↓1.2 MB/s ↑340 KB/s`, Bandwidth+-style
   - `both` — both, space permitting
 
+The app also includes a menu-bar Display selector so users can switch between
+System, Network, and Both modes directly from the tray menu. The chosen mode is
+saved to the user's config directory and restored on the next launch.
+
 ### Bandwidth monitoring
 
 Live down/up rate and a "Session" line (estimated data transferred since
@@ -113,13 +121,25 @@ skipped rather than crashing the tray; the last-good values stay displayed.
 
 ## Releasing
 
-Tag a version and push — `.github/workflows/build.yml` builds on
-`macos-latest` and attaches a zipped `.app` to the GitHub Release:
+This repo is currently at version `0.1.1` and includes the display-mode
+selection feature. Tag a release and push — `.github/workflows/build.yml`
+builds on `macos-latest` and attaches a zipped `.app` to the GitHub Release:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
+
+If you have a fork or remote set up, you can push the current branch to GitHub
+with:
+
+```sh
+git add .
+git commit -m "Add display mode selector"
+git push origin main
+```
+
+If you want to publish a tagged release, use the tag command above.
 
 ## License
 
