@@ -2,18 +2,15 @@ name: build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
 
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.21"
 
@@ -28,6 +25,7 @@ jobs:
           cd build
           zip -r MoleBar.app.zip MoleBar.app
 
+      # upload-artifact v4 is the current major; GitHub is handling its Node 24 compatibility
       - uses: actions/upload-artifact@v4
         with:
           name: MoleBar.app
