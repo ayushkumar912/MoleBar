@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="cmd/molebar/molebar-icon.png" alt="MoleBar icon" width="128" />
+</p>
+
 # MoleBar
 
 A macOS menu-bar widget for [Mole](https://github.com/tw93/Mole) — shows live
