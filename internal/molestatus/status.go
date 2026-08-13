@@ -5,6 +5,7 @@ package molestatus
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -48,6 +49,17 @@ type Status struct {
 		CycleCount int    `json:"cycle_count"`
 	} `json:"batteries"`
 
+	// Network holds one entry per interface Mole reports (Wi-Fi, Ethernet,
+	// VPN tunnels, etc). Inactive interfaces are still present with zero
+	// rates, so callers should sum/filter rather than assume index 0 is
+	// the active link.
+	Network []struct {
+		Name      string  `json:"name"`
+		RxRateMBs float64 `json:"rx_rate_mbs"` // MB/s, matches mo's text UI ("R 0.1 · W 0 MB/s")
+		TxRateMBs float64 `json:"tx_rate_mbs"`
+		IP        string  `json:"ip"`
+	} `json:"network"`
+
 	Procs int `json:"procs"`
 }
 
@@ -78,6 +90,45 @@ func (s *Status) PrimaryBattery() (percent int, status string, ok bool) {
 	return s.Batteries[0].Percent, s.Batteries[0].Status, true
 }
 
+// TotalNetRates sums rx/tx across every interface Mole reports, in MB/s.
+// Summing (rather than picking one interface) is safe because inactive
+// interfaces report 0 — but note it can double-count traffic on machines
+// running a VPN tunnel on top of Wi-Fi/Ethernet, since the tunnel and the
+// underlying physical interface both carry (roughly) the same bytes. If
+// you only care about the physical link, filter s.Network by name instead.
+func (s *Status) TotalNetRates() (rxMBs, txMBs float64) {
+	for _, n := range s.Network {
+		rxMBs += n.RxRateMBs
+		txMBs += n.TxRateMBs
+	}
+	return rxMBs, txMBs
+}
+
+// FormatRate renders a MB/s value the way most bandwidth-monitor menu bar
+// apps do: sub-1-MB/s rates in KB/s for readability, everything else in
+// MB/s with one decimal place.
+func FormatRate(mbs float64) string {
+	if mbs < 1 {
+		return fmt.Sprintf("%.0f KB/s", mbs*1024)
+	}
+	return fmt.Sprintf("%.1f MB/s", mbs)
+}
+
+// FormatBytes renders a byte count as B/KB/MB/GB, matching common
+// menu-bar-app conventions (used for session cumulative totals).
+func FormatBytes(bytes float64) string {
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.2f GB", bytes/(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", bytes/(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.0f KB", bytes/(1<<10))
+	default:
+		return fmt.Sprintf("%.0f B", bytes)
+	}
+}
+
 // Fetcher runs `mo status --json` and parses the result. It shells out
 // rather than linking Mole as a library because Mole ships as a CLI, not
 // a Go package with a stable public API.
@@ -91,10 +142,21 @@ type Fetcher struct {
 }
 
 func (f *Fetcher) bin() string {
-	if f.BinPath == "" {
-		return "mo"
+	if f.BinPath != "" {
+		return f.BinPath
 	}
-	return f.BinPath
+	if p, err := exec.LookPath("mo"); err == nil {
+		return p
+	}
+	// GUI apps launched from Finder/Applications don't inherit the shell's
+	// $PATH, so "mo" often isn't resolvable there even though it works
+	// fine from a terminal. Fall back to the standard Homebrew locations.
+	for _, p := range []string{"/opt/homebrew/bin/mo", "/usr/local/bin/mo"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "mo" // let exec.Command fail with a clear "not found" error
 }
 
 func (f *Fetcher) timeout() time.Duration {

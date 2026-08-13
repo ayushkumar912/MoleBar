@@ -16,6 +16,8 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>molebar</string>
+    <key>CFBundleIconFile</key>
+    <string>MoleBar.icns</string>
     <!-- LSUIElement = true hides the app from the Dock and Cmd+Tab, since
          this is a menu-bar-only utility, not a windowed app. -->
     <key>LSUIElement</key>

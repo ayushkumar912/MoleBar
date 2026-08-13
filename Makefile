@@ -18,9 +18,10 @@ build:
 ## so it launches from Spotlight/Applications and only appears in the menu
 ## bar (no Dock icon, no Cmd+Tab entry).
 app: build
-	mkdir -p $(CONTENTS)/MacOS
+	mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources
 	cp $(BUILD_DIR)/$(BIN_NAME) $(CONTENTS)/MacOS/$(BIN_NAME)
 	cp packaging/Info.plist $(CONTENTS)/Info.plist
+	cp packaging/MoleBar.icns $(CONTENTS)/Resources/MoleBar.icns
 	@echo "Built $(APP_BUNDLE) — drag it into /Applications, then launch it."
 
 ## run: build and run directly in the terminal (useful while developing;
