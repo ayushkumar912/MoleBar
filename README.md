@@ -207,15 +207,22 @@ make app CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 ```
 
 GitHub Releases can sign when `CODESIGN_IDENTITY` is provided as a repository
-secret. Notarization (`notarytool` / a stored keychain profile) is optional and
-is not run unless you add those secrets yourself. Do not commit certificates,
-passwords, or profiles.
+secret. The Makefile and workflows do not run notarization (`notarytool`).
+Do not commit certificates, passwords, or profiles.
 
-Typical secrets if you enable notarization later:
+## Development
 
-- `CODESIGN_IDENTITY` — Developer ID Application identity name
-- An Apple API key or app-specific password for `notarytool` (store as Actions
-  secrets; never in the repo)
+Developer documentation (authoritative for current code; this README is the user-facing entry point):
+
+- [Development Guide](docs/DEVELOPMENT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Mole Integration](docs/MOLE_INTEGRATION.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Testing](docs/TESTING.md)
+- [Build and Release](docs/BUILD_AND_RELEASE.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Contributing](docs/CONTRIBUTING.md)
+- [Repository Map](docs/REPOSITORY_MAP.md)
 
 ## License
 
