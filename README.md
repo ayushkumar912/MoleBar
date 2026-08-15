@@ -5,9 +5,8 @@
 # MoleBar
 
 A macOS menu-bar widget for [Mole](https://github.com/tw93/Mole) — shows live
-CPU, memory, swap, disk, battery, and health score by polling `mo status --json`
-on an interval. No Electron, no background daemon beyond the binary itself,
-no telemetry.
+CPU, memory, swap, disk, battery, and health score. No Electron, no background
+daemon beyond the binary itself, no telemetry.
 
 ```
 CPU 12% MEM 67%   ← menu bar title (default; switch to net rates or both — see Configuration)
@@ -35,11 +34,14 @@ CPU 12% MEM 67%   ← menu bar title (default; switch to net rates or both — s
 
 ## Requirements
 
-- macOS 11+
-- [Mole](https://github.com/tw93/Mole) installed and `mo` on `$PATH`:
+- **MoleBar** requires macOS 11+ (see `LSMinimumSystemVersion` in the app bundle).
+- **[Mole](https://github.com/tw93/Mole)** must be installed separately so `mo` is
+  on `$PATH`. The current Homebrew install path is:
   ```sh
-  brew install tw93/tap/mole
+  brew install mole
   ```
+  Mole's own OS support is defined by that project; MoleBar does not add extra
+  compatibility claims for Mole.
 - Go 1.21+ (only needed to build; the released `.app` has no runtime Go dependency)
 - Xcode Command Line Tools (`xcode-select --install`) — required to build
   `systray`'s cgo-based macOS backend
@@ -51,6 +53,10 @@ git clone https://github.com/<you>/molebar.git
 cd molebar
 make app        # builds build/MoleBar.app
 ```
+
+`make check` verifies formatting (without rewriting files), modules, tests, and `go vet`.
+`make test` / `make vet` run those steps individually. `make clean` removes `build/` and `dist/`.
+`make app` builds a native-architecture bundle; `make app UNIVERSAL=1` (and `make dist`) builds a universal `arm64` + `x86_64` binary when the local macOS SDK can target both.
 
 Drag `build/MoleBar.app` into `/Applications`, then launch it from Spotlight.
 It registers as a menu-bar-only app (`LSUIElement`, see `packaging/Info.plist`)
@@ -70,37 +76,46 @@ Three flags, all optional:
 molebar -interval=5s -mo-bin=/opt/homebrew/bin/mo -title=net
 ```
 
-- `-interval` — refresh period (default `5s`)
+- `-interval` — refresh period (default `5s`). Must be greater than zero;
+  invalid values exit with an error instead of starting the tray.
 - `-mo-bin` — explicit path to the `mo` binary. Set this if you launch
   MoleBar via `launchd`/login item and it can't find `mo` on `$PATH`
   (launchd-started processes get a minimal `PATH` that often excludes
   Homebrew's `bin` directories)
-- `-title` — what the always-visible menu bar text shows:
+- `-title` — runtime-only override of the always-visible menu bar text:
   - `sys` (default) — `CPU 12% MEM 67%`
   - `net` — `↓1.2 MB/s ↑340 KB/s`, Bandwidth+-style
   - `both` — both, space permitting
 
-The app also includes a menu-bar Display selector so users can switch between
-System, Network, and Both modes directly from the tray menu. The chosen mode is
-saved to the user's config directory and restored on the next launch.
+  A saved Display-menu preference is the default. An explicit `-title` wins
+  for that process only and is **not** written to disk. Choosing System /
+  Network / Both from the menu persists the new preference for later launches.
 
 ### Bandwidth monitoring
 
 Live down/up rate and a "Session" line (estimated data transferred since
-MoleBar launched) are always in the dropdown regardless of `-title`. Two
-things worth knowing:
+MoleBar launched) are always in the dropdown regardless of `-title`.
 
-- **Rates are summed across every interface** Mole reports (Wi-Fi,
-  Ethernet, VPN tunnel, etc). If you're on a VPN, this can roughly
-  double-count traffic, since the tunnel and the physical interface both
-  carry the same bytes. See `TotalNetRates` in `internal/molestatus/status.go`
-  if you want to filter to one named interface instead.
-- **Session totals are estimated, not exact.** Mole's JSON exposes an
-  instantaneous rate (MB/s), not a cumulative byte counter, so MoleBar
-  integrates rate × elapsed time on every refresh tick. This is a good
-  approximation at typical refresh intervals but isn't a true kernel-level
-  byte count — expect it to drift somewhat from Activity Monitor's Network
-  tab over long sessions. Click "Reset session totals" to zero it out.
+- **Rates are the sum of the network records Mole supplies.** Mole decides
+  which interfaces appear in its JSON. MoleBar does not assume it receives
+  every physical or VPN interface.
+- **Session totals are estimated, not exact.** Mole exposes an instantaneous
+  rate (MB/s), not a cumulative byte counter, so MoleBar integrates
+  rate × elapsed time between valid samples. The first successful sample
+  (and the first sample after a failure, a long gap, or a reset) only primes
+  the meter — it does not add bytes. A failed refresh breaks that continuity
+  so an outage is not attributed to a later rate. Click **Reset session totals**
+  to zero the counters and clear sampling state.
+
+## How it works
+
+MoleBar prefers Mole's streaming command
+`mo status --watch --interval=...` (newline-delimited JSON from one process).
+If the installed Mole build does not support watch mode, it falls back to
+polling `mo status --json`. Failed refreshes are logged and skipped rather
+than crashing the tray; last-good dropdown values stay visible.
+
+It does not link Mole as a library — Mole ships as a CLI.
 
 ## App icon
 
@@ -114,36 +129,39 @@ text, wire in a monochrome template image via `systray.SetIcon()`.
 
 System Settings → General → Login Items & Extensions → add `MoleBar.app`.
 
-## How it works
-
-`molebar` shells out to `mo status --json` on a timer (see
-`internal/molestatus/status.go`) and renders the fields it cares about into
-a [`getlantern/systray`](https://github.com/getlantern/systray) menu-bar item.
-It does not link Mole as a library — Mole ships as a CLI, so this just wraps
-its JSON output. Failed refreshes (e.g. Mole mid-update) are logged and
-skipped rather than crashing the tray; the last-good values stay displayed.
-
 ## Releasing
 
-This repo is currently at version `0.1.1` and includes the display-mode
-selection feature. Tag a release and push — `.github/workflows/build.yml`
-builds on `macos-latest` and attaches a zipped `.app` to the GitHub Release:
+The release version is the git tag (for example `v0.1.2`). That tag is the
+source of truth: `make app` / `make dist` stamp `CFBundleVersion` and
+`CFBundleShortVersionString` from `git describe`, or from `VERSION=` when
+the GitHub Actions release job runs on a `v*` tag.
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
-If you have a fork or remote set up, you can push the current branch to GitHub
-with:
+`make dist` writes `dist/MoleBar-<version>.app.zip` (via `ditto`) and a
+source tarball from `git archive` (no `.git`, no working-tree junk).
+
+### Signing and notarization
+
+Local `make app` does not require Apple credentials. To sign a local bundle:
 
 ```sh
-git add .
-git commit -m "Add display mode selector"
-git push origin main
+make app CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 ```
 
-If you want to publish a tagged release, use the tag command above.
+GitHub Releases can sign when `CODESIGN_IDENTITY` is provided as a repository
+secret. Notarization (`notarytool` / a stored keychain profile) is optional and
+is not run unless you add those secrets yourself. Do not commit certificates,
+passwords, or profiles.
+
+Typical secrets if you enable notarization later:
+
+- `CODESIGN_IDENTITY` — Developer ID Application identity name
+- An Apple API key or app-specific password for `notarytool` (store as Actions
+  secrets; never in the repo)
 
 ## License
 

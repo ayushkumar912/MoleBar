@@ -1,253 +1,170 @@
-// Command molebar is a macOS menu-bar widget that shells out to Mole
-// (`mo status --json`, https://github.com/tw93/Mole) on an interval and
-// shows CPU, memory, swap, disk, battery, and health-score in the menu bar.
+// Command molebar is a macOS menu-bar widget that reads Mole
+// (`mo status --watch` or `mo status --json`, https://github.com/tw93/Mole)
+// and shows CPU, memory, swap, disk, battery, and health-score in the menu bar.
 //
 // Requires the `mo` CLI to be installed and on $PATH:
 //
-//	brew install tw93/tap/mole
+//	brew install mole
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/getlantern/systray"
 
+	"github.com/ayush-kumar912/molebar/internal/app"
+	"github.com/ayush-kumar912/molebar/internal/config"
 	"github.com/ayush-kumar912/molebar/internal/molestatus"
+	"github.com/ayush-kumar912/molebar/internal/presentation"
 )
-
-var (
-	interval  = flag.Duration("interval", 5*time.Second, "refresh interval")
-	binPath   = flag.String("mo-bin", "", `path to the "mo" executable (default: resolve "mo" from $PATH)`)
-	titleMode = flag.String("title", "", `what to show in the menu bar title: "sys" (CPU/MEM), "net" (↓/↑ rates), or "both"`)
-)
-
-func normalizeDisplayMode(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "net", "network":
-		return "net"
-	case "both":
-		return "both"
-	default:
-		return "sys"
-	}
-}
-
-func defaultDisplayMode() string {
-	if mode, ok := readSavedDisplayMode(); ok {
-		return normalizeDisplayMode(mode)
-	}
-	return "sys"
-}
-
-func readSavedDisplayMode() (string, bool) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", false
-	}
-	path := filepath.Join(configDir, "molebar", "display_mode")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	return strings.TrimSpace(string(data)), true
-}
-
-func saveDisplayMode(mode string) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		log.Printf("molebar: failed to resolve config dir: %v", err)
-		return
-	}
-	path := filepath.Join(configDir, "molebar", "display_mode")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("molebar: failed to create config dir: %v", err)
-		return
-	}
-	if err := os.WriteFile(path, []byte(normalizeDisplayMode(mode)), 0o644); err != nil {
-		log.Printf("molebar: failed to save display mode: %v", err)
-	}
-}
 
 func main() {
-	flag.Parse()
-	if *titleMode == "" {
-		*titleMode = defaultDisplayMode()
+	store := config.NewFileStore("")
+	cfg, err := parseRuntime(flag.CommandLine, os.Args[1:], store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "molebar: %v\n", err)
+		os.Exit(2)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	systray.Run(func() { onReady(ctx, cancel, cfg, store) }, cancel)
+}
+
+func parseRuntime(fs *flag.FlagSet, args []string, store config.Store) (app.Config, error) {
+	interval := fs.Duration("interval", 5*time.Second, "refresh interval")
+	binPath := fs.String("mo-bin", "", `path to the "mo" executable (default: resolve "mo" from $PATH)`)
+	titleMode := fs.String("title", "", `what to show in the menu bar title: "sys" (CPU/MEM), "net" (↓/↑ rates), or "both"`)
+	if err := fs.Parse(args); err != nil {
+		return app.Config{}, err
+	}
+	if err := validateInterval(*interval); err != nil {
+		return app.Config{}, err
+	}
+	return app.Config{
+		Interval:    *interval,
+		BinPath:     molestatus.ResolveBinary(*binPath),
+		DisplayMode: config.ResolveDisplayMode(store, *titleMode),
+	}, nil
+}
+
+func validateInterval(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("-interval must be greater than 0 (got %v)", d)
+	}
+	return nil
+}
+
+type menu struct {
+	cpu, mem, swap, disk, batt                   *systray.MenuItem
+	down, up, session, sessionReset              *systray.MenuItem
+	display, displaySys, displayNet, displayBoth *systray.MenuItem
+	health, updated                              *systray.MenuItem
+	refresh, quit                                *systray.MenuItem
+}
+
+func newMenu() *menu {
+	m := &menu{}
+	m.cpu = systray.AddMenuItem("CPU: —", "")
+	m.mem = systray.AddMenuItem("Memory: —", "")
+	m.swap = systray.AddMenuItem("Swap: —", "")
+	m.disk = systray.AddMenuItem("Disk: —", "")
+	m.batt = systray.AddMenuItem("Battery: —", "")
+	systray.AddSeparator()
+	m.down = systray.AddMenuItem("↓ —", "Current download rate")
+	m.up = systray.AddMenuItem("↑ —", "Current upload rate")
+	m.session = systray.AddMenuItem("Session: —", "Estimated data transferred since molebar launched")
+	m.sessionReset = systray.AddMenuItem("Reset session totals", "Zero out the session download/upload counters")
+	systray.AddSeparator()
+	m.display = systray.AddMenuItem("Display: System", "Choose what to show in the menu bar")
+	m.displaySys = m.display.AddSubMenuItem("System", "Show CPU and memory")
+	m.displayNet = m.display.AddSubMenuItem("Network", "Show download/upload speed")
+	m.displayBoth = m.display.AddSubMenuItem("Both", "Show CPU, memory, and network")
+	systray.AddSeparator()
+	m.health = systray.AddMenuItem("Health: —", "")
+	m.updated = systray.AddMenuItem("Updated: —", "")
+	m.updated.Disable()
+	systray.AddSeparator()
+	m.refresh = systray.AddMenuItem("Refresh now", "Fetch mo status immediately")
+	m.quit = systray.AddMenuItem("Quit", "Quit molebar")
+	return m
+}
+
+func apply(m *menu, vm presentation.ViewModel) {
+	systray.SetTitle(vm.Title)
+	systray.SetTooltip(vm.Tooltip)
+	m.cpu.SetTitle(vm.CPU)
+	m.mem.SetTitle(vm.Memory)
+	m.swap.SetTitle(vm.Swap)
+	m.disk.SetTitle(vm.Disk)
+	m.batt.SetTitle(vm.Battery)
+	m.down.SetTitle(vm.Down)
+	m.up.SetTitle(vm.Up)
+	m.session.SetTitle(vm.Session)
+	m.display.SetTitle(vm.DisplayLabel)
+	m.health.SetTitle(vm.Health)
+	m.updated.SetTitle(vm.Updated)
+	setChecked(m.displaySys, vm.ModeSys)
+	setChecked(m.displayNet, vm.ModeNet)
+	setChecked(m.displayBoth, vm.ModeBoth)
+}
+
+func setChecked(item *systray.MenuItem, on bool) {
+	if on {
+		item.Check()
 	} else {
-		*titleMode = normalizeDisplayMode(*titleMode)
-	}
-	systray.Run(onReady, onExit)
-}
-
-func displayLabel(mode string) string {
-	switch normalizeDisplayMode(mode) {
-	case "net":
-		return "Network"
-	case "both":
-		return "Both"
-	default:
-		return "System"
+		item.Uncheck()
 	}
 }
 
-func setDisplayModeLabel(item *systray.MenuItem, mode string) {
-	if item != nil {
-		item.SetTitle("Display: " + displayLabel(mode))
-	}
-}
+func onReady(ctx context.Context, cancel context.CancelFunc, cfg app.Config, store config.Store) {
+	ctrl := app.New(cfg, store, nil)
+	m := newMenu()
+	apply(m, ctrl.View())
 
-func onReady() {
-	systray.SetTitle("mo …")
-	systray.SetTooltip("Mole system status")
-
-	mCPU := systray.AddMenuItem("CPU: —", "")
-	mMem := systray.AddMenuItem("Memory: —", "")
-	mSwap := systray.AddMenuItem("Swap: —", "")
-	mDisk := systray.AddMenuItem("Disk: —", "")
-	mBatt := systray.AddMenuItem("Battery: —", "")
-	systray.AddSeparator()
-	mDown := systray.AddMenuItem("↓ —", "Current download rate")
-	mUp := systray.AddMenuItem("↑ —", "Current upload rate")
-	mSession := systray.AddMenuItem("Session: —", "Estimated data transferred since molebar launched")
-	mSessionReset := systray.AddMenuItem("Reset session totals", "Zero out the session download/upload counters")
-	systray.AddSeparator()
-	mDisplay := systray.AddMenuItem("Display: "+displayLabel(*titleMode), "Choose what to show in the menu bar")
-	mDisplaySystem := mDisplay.AddSubMenuItem("System", "Show CPU and memory")
-	mDisplayNetwork := mDisplay.AddSubMenuItem("Network", "Show download/upload speed")
-	mDisplayBoth := mDisplay.AddSubMenuItem("Both", "Show CPU, memory, and network")
-	systray.AddSeparator()
-	mHealth := systray.AddMenuItem("Health: —", "")
-	mUpdated := systray.AddMenuItem("Updated: —", "")
-	mUpdated.Disable()
-	systray.AddSeparator()
-	mRefresh := systray.AddMenuItem("Refresh now", "Fetch mo status immediately")
-	mQuit := systray.AddMenuItem("Quit", "Quit molebar")
-
-	fetcher := &molestatus.Fetcher{BinPath: *binPath}
-
-	// Mole reports instantaneous rate, not a cumulative byte counter, so
-	// session totals are estimated by integrating rate × elapsed time on
-	// each refresh. This is an approximation — it only accounts for
-	// traffic during the intervals molebar was actually running and
-	// sampling, not true bytes-since-boot like a kernel counter would give.
-	var (
-		sessionRxBytes float64
-		sessionTxBytes float64
-		lastTick       = time.Now()
-	)
-
-	setDisplayMode := func(mode string) {
-		*titleMode = normalizeDisplayMode(mode)
-		saveDisplayMode(*titleMode)
-		setDisplayModeLabel(mDisplay, *titleMode)
-		mDisplaySystem.Uncheck()
-		mDisplayNetwork.Uncheck()
-		mDisplayBoth.Uncheck()
-		switch *titleMode {
-		case "net":
-			mDisplayNetwork.Check()
-		case "both":
-			mDisplayBoth.Check()
-		default:
-			mDisplaySystem.Check()
+	src := molestatus.NewSource(molestatus.Options{
+		Bin:      cfg.BinPath,
+		Interval: cfg.Interval,
+	})
+	updates := make(chan molestatus.Result, 4)
+	go src.Run(ctx, func(r molestatus.Result) {
+		select {
+		case updates <- r:
+		case <-ctx.Done():
 		}
-	}
-
-	setDisplayMode(*titleMode)
-
-	refresh := func() {
-		s, err := fetcher.Fetch()
-		if err != nil {
-			// Don't crash the tray on a transient failure — surface it in
-			// the title/log and keep the last-good values in the dropdown.
-			systray.SetTitle("mo: err")
-			log.Printf("molebar: refresh failed: %v", err)
-			return
-		}
-
-		rxRate, txRate := s.TotalNetRates()
-
-		now := time.Now()
-		elapsed := now.Sub(lastTick).Seconds()
-		lastTick = now
-		// elapsed can be large on the very first tick or after the Mac
-		// slept — cap it so a sleep/wake cycle doesn't fabricate hours of
-		// "transferred" data from one stale rate sample.
-		if elapsed > 0 && elapsed < 60 {
-			const bytesPerMB = 1 << 20
-			sessionRxBytes += rxRate * bytesPerMB * elapsed
-			sessionTxBytes += txRate * bytesPerMB * elapsed
-		}
-
-		switch *titleMode {
-		case "net":
-			systray.SetTitle(fmt.Sprintf("↓%s ↑%s", molestatus.FormatRate(rxRate), molestatus.FormatRate(txRate)))
-		case "both":
-			systray.SetTitle(fmt.Sprintf("CPU %.0f%% MEM %.0f%%  ↓%s ↑%s",
-				s.CPU.Usage, s.Memory.UsedPercent, molestatus.FormatRate(rxRate), molestatus.FormatRate(txRate)))
-		default: // "sys"
-			systray.SetTitle(fmt.Sprintf("CPU %.0f%% MEM %.0f%%", s.CPU.Usage, s.Memory.UsedPercent))
-		}
-		systray.SetTooltip(fmt.Sprintf("Health %d (%s)", s.HealthScore, s.HealthMsg))
-
-		mCPU.SetTitle(fmt.Sprintf("CPU: %.1f%%  (load1 %.2f)", s.CPU.Usage, s.CPU.Load1))
-		mMem.SetTitle(fmt.Sprintf("Memory: %.1f%%", s.Memory.UsedPercent))
-		mSwap.SetTitle(fmt.Sprintf("Swap: %.1f%%", s.SwapPercent()))
-
-		if pct := s.PrimaryDiskPercent(); pct >= 0 {
-			mDisk.SetTitle(fmt.Sprintf("Disk: %.1f%%", pct))
-		} else {
-			mDisk.SetTitle("Disk: n/a")
-		}
-
-		if pct, status, ok := s.PrimaryBattery(); ok {
-			mBatt.SetTitle(fmt.Sprintf("Battery: %d%% (%s)", pct, status))
-		} else {
-			mBatt.SetTitle("Battery: n/a")
-		}
-
-		mDown.SetTitle("↓ " + molestatus.FormatRate(rxRate))
-		mUp.SetTitle("↑ " + molestatus.FormatRate(txRate))
-		mSession.SetTitle(fmt.Sprintf("Session: ↓%s ↑%s",
-			molestatus.FormatBytes(sessionRxBytes), molestatus.FormatBytes(sessionTxBytes)))
-
-		mHealth.SetTitle(fmt.Sprintf("Health: %d (%s)", s.HealthScore, s.HealthMsg))
-		mUpdated.SetTitle("Updated: " + time.Now().Format("15:04:05"))
-	}
-
-	refresh()
-	ticker := time.NewTicker(*interval)
+	})
 
 	go func() {
-		defer ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				refresh()
-			case <-mRefresh.ClickedCh:
-				refresh()
-			case <-mSessionReset.ClickedCh:
-				sessionRxBytes, sessionTxBytes = 0, 0
-				mSession.SetTitle("Session: ↓0 B ↑0 B")
-			case <-mDisplaySystem.ClickedCh:
-				setDisplayMode("sys")
-			case <-mDisplayNetwork.ClickedCh:
-				setDisplayMode("net")
-			case <-mDisplayBoth.ClickedCh:
-				setDisplayMode("both")
-			case <-mQuit.ClickedCh:
+			case <-ctx.Done():
+				return
+			case r := <-updates:
+				ctrl.OnResult(r)
+				apply(m, ctrl.View())
+			case <-m.refresh.ClickedCh:
+				ctrl.Refresh(ctx)
+				apply(m, ctrl.View())
+			case <-m.sessionReset.ClickedCh:
+				ctrl.ResetSession()
+				apply(m, ctrl.View())
+			case <-m.displaySys.ClickedCh:
+				ctrl.SetDisplayMode(config.DisplayModeSys)
+				apply(m, ctrl.View())
+			case <-m.displayNet.ClickedCh:
+				ctrl.SetDisplayMode(config.DisplayModeNet)
+				apply(m, ctrl.View())
+			case <-m.displayBoth.ClickedCh:
+				ctrl.SetDisplayMode(config.DisplayModeBoth)
+				apply(m, ctrl.View())
+			case <-m.quit.ClickedCh:
+				cancel()
 				systray.Quit()
 				return
 			}
 		}
 	}()
-}
-
-func onExit() {
-	// No persistent state to clean up.
 }

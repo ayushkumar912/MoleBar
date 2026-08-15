@@ -1,38 +1,73 @@
-name: build
+name: release
 
 on:
   push:
     tags: ["v*"]
 
-jobs:
-  build:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
+permissions:
+  contents: read
 
-      - uses: actions/setup-go@v6
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.21"
 
-      - name: vet
-        run: go vet ./...
+      - name: Resolve version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - name: build .app bundle
-        run: make app
+      - name: Test
+        run: go test ./...
 
-      - name: zip bundle
+      - name: Build .app (try universal)
         run: |
-          cd build
-          zip -r MoleBar.app.zip MoleBar.app
+          if make app UNIVERSAL=1 VERSION="$VERSION"; then
+            echo "Built universal .app"
+          else
+            echo "Universal build failed; falling back to native architecture"
+            make app VERSION="$VERSION"
+          fi
+          echo "Binary:"
+          file build/MoleBar.app/Contents/MacOS/molebar
+          lipo -info build/MoleBar.app/Contents/MacOS/molebar || true
+          echo "Info.plist versions:"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/MoleBar.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/MoleBar.app/Contents/Info.plist
 
-      # upload-artifact v4 is the current major; GitHub is handling its Node 24 compatibility
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MoleBar.app
-          path: build/MoleBar.app.zip
+      - name: Optional Developer ID signing
+        if: ${{ secrets.CODESIGN_IDENTITY != '' }}
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: make sign VERSION="$VERSION" CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+      - name: Package with ditto
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent --norsrc --noextattr --noqtn build/MoleBar.app "dist/MoleBar-${VERSION}.app.zip"
+          git archive --format=tar.gz --prefix="molebar-${VERSION}/" -o "dist/molebar-${VERSION}.tar.gz" HEAD
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          files: build/MoleBar.app.zip
+          name: MoleBar
+          path: |
+            dist/MoleBar-${{ env.VERSION }}.app.zip
+            dist/molebar-${{ env.VERSION }}.tar.gz
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            dist/MoleBar-${{ env.VERSION }}.app.zip
+            dist/molebar-${{ env.VERSION }}.tar.gz
+          generate_release_notes: true

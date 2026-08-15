@@ -1,4 +1,7 @@
 /build/
+/dist/
 *.app
 *.zip
 .DS_Store
+__MACOSX
+/molebar
