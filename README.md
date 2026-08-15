@@ -49,7 +49,7 @@ CPU 12% MEM 67%   ← menu bar title (default; switch to net rates or both — s
 ## Build
 
 ```sh
-git clone https://github.com/<you>/molebar.git
+git clone https://github.com/ayushkumar912/MoleBar.git
 cd molebar
 make app        # builds build/MoleBar.app
 ```
