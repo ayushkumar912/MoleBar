@@ -14,13 +14,38 @@ import (
 // Sentinel errors so callers can distinguish failure classes without
 // scraping implementation text into the tray.
 var (
-	ErrNotFound         = errors.New("mo executable not found")
-	ErrWatchUnsupported = errors.New("mo status --watch is not supported")
-	ErrMalformedJSON    = errors.New("malformed mole status JSON")
-	ErrCanceled         = errors.New("mole command canceled")
-	ErrTimeout          = errors.New("mole command timed out")
-	ErrNonZero          = errors.New("mole command exited non-zero")
+	ErrNotFound              = errors.New("mo executable not found")
+	ErrWatchUnsupported      = errors.New("mo status --watch is not supported")
+	ErrMalformedJSON         = errors.New("malformed mole status JSON")
+	ErrCanceled              = errors.New("mole command canceled")
+	ErrTimeout               = errors.New("mole command timed out")
+	ErrNonZero               = errors.New("mole command exited non-zero")
+	ErrMalformedCapabilities = errors.New("malformed mole capability output")
 )
+
+// ErrorCategory is a stable label for diagnostics and control flow.
+func ErrorCategory(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrNotFound):
+		return "executable_missing"
+	case errors.Is(err, ErrWatchUnsupported):
+		return "watch_unsupported"
+	case errors.Is(err, ErrTimeout):
+		return "timeout"
+	case errors.Is(err, ErrMalformedJSON):
+		return "malformed_json"
+	case errors.Is(err, ErrMalformedCapabilities):
+		return "malformed_capabilities"
+	case errors.Is(err, ErrCanceled):
+		return "canceled"
+	case errors.Is(err, ErrNonZero):
+		return "command_failure"
+	default:
+		return "unknown"
+	}
+}
 
 const defaultFetchTimeout = 5 * time.Second
 

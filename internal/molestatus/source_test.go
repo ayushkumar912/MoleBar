@@ -101,8 +101,11 @@ func TestPollingSourceEmitsAndStops(t *testing.T) {
 	go src.Run(ctx, func(r Result) { got <- r })
 	select {
 	case r := <-got:
-		if r.Err != nil || r.Status == nil || r.Status.HealthScore != 7 {
+		if r.Err != nil || r.Status == nil {
 			t.Fatalf("first = %+v err=%v", r.Status, r.Err)
+		}
+		if score, _, ok := r.Status.Health(); !ok || score != 7 {
+			t.Fatalf("health = %v ok=%v", score, ok)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for poll")
@@ -161,8 +164,11 @@ echo '`+okJSON+`'
 		if r.Err != nil {
 			t.Fatalf("fallback should succeed: %v", r.Err)
 		}
-		if r.Status == nil || r.Status.HealthScore != 7 {
+		if r.Status == nil {
 			t.Fatalf("status = %+v", r.Status)
+		}
+		if score, _, ok := r.Status.Health(); !ok || score != 7 {
+			t.Fatalf("health = %v ok=%v", score, ok)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no sample from fallback")

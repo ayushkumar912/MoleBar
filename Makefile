@@ -14,12 +14,12 @@ endif
 
 MACOSX_DEPLOYMENT_TARGET ?= 11.0
 SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
-GOFLAGS := -buildvcs=false -trimpath -ldflags="-s -w"
+GOFLAGS := -buildvcs=false -trimpath -ldflags="-s -w -X main.version=$(VERSION)"
 
 # Optional Developer ID identity. Local builds do not require this.
 CODESIGN_IDENTITY ?=
 
-.PHONY: all build build-native build-universal app test vet check fmt clean run dist sign
+.PHONY: all build build-native build-universal app test vet race check fmt clean run dist sign
 
 all: app
 
@@ -79,6 +79,9 @@ test:
 
 vet:
 	go vet ./...
+
+race:
+	go test -race ./...
 
 ## check: verify formatting and run tests without modifying files.
 check:

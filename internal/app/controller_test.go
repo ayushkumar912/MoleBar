@@ -9,21 +9,21 @@ import (
 )
 
 type memStore struct {
-	mode    config.DisplayMode
+	prefs   config.Preferences
 	ok      bool
 	saves   int
-	last    config.DisplayMode
+	last    config.Preferences
 	saveErr error
 }
 
-func (m *memStore) Load() (config.DisplayMode, bool, error) {
-	return m.mode, m.ok, nil
+func (m *memStore) Load() (config.Preferences, bool, error) {
+	return m.prefs, m.ok, nil
 }
 
-func (m *memStore) Save(mode config.DisplayMode) error {
+func (m *memStore) Save(prefs config.Preferences) error {
 	m.saves++
-	m.last = mode
-	m.mode = mode
+	m.last = prefs
+	m.prefs = prefs
 	m.ok = true
 	return m.saveErr
 }
@@ -66,7 +66,7 @@ func TestControllerFailureBreaksContinuity(t *testing.T) {
 }
 
 func TestControllerResetAndModePersist(t *testing.T) {
-	store := &memStore{mode: config.DisplayModeSys, ok: true}
+	store := &memStore{prefs: config.DefaultPreferences(), ok: true}
 	clk := t0()
 	c := New(Config{DisplayMode: config.DisplayModeSys}, store, func() time.Time { return clk })
 	c.OnResult(molestatus.Result{Status: statusWithRates(1, 1)})
@@ -80,11 +80,41 @@ func TestControllerResetAndModePersist(t *testing.T) {
 		t.Fatalf("startup/reset must not persist, saves=%d", store.saves)
 	}
 	c.SetDisplayMode(config.DisplayModeNet)
-	if store.saves != 1 || store.last != config.DisplayModeNet {
-		t.Fatalf("menu change should persist: saves=%d last=%q", store.saves, store.last)
+	if store.saves != 1 || store.last.DisplayMode() != config.DisplayModeNet {
+		t.Fatalf("menu change should persist: saves=%d last=%q", store.saves, store.last.DisplayMode())
 	}
 	if c.Mode() != config.DisplayModeNet {
 		t.Fatalf("mode = %q", c.Mode())
+	}
+}
+
+func TestControllerProfileAndMetricPersist(t *testing.T) {
+	store := &memStore{}
+	c := New(Config{DisplayMode: config.DisplayModeSys}, store, nil)
+	c.SetProfile("developer")
+	if store.saves != 1 || store.last.Profile != "developer" {
+		t.Fatalf("profile persist %+v", store.last)
+	}
+	c.ToggleMetric(config.MetricHealth)
+	if store.last.Profile != "custom" || !store.last.Layout.Contains(config.MetricHealth) {
+		t.Fatalf("toggle persist %+v", store.last)
+	}
+}
+
+func TestControllerStrategyOnlyDoesNotInvalidate(t *testing.T) {
+	clk := t0()
+	c := New(Config{DisplayMode: config.DisplayModeSys}, &memStore{}, func() time.Time { return clk })
+	c.OnResult(molestatus.Result{Status: statusWithRates(1, 1)})
+	clk = clk.Add(time.Second)
+	c.OnResult(molestatus.Result{Status: statusWithRates(1, 1)})
+	c.OnResult(molestatus.Result{Strategy: "watch"})
+	clk = clk.Add(time.Second)
+	c.OnResult(molestatus.Result{Status: statusWithRates(1, 1)})
+	if c.View().Session != "Session: ↓2.0 MB ↑2.0 MB" {
+		t.Fatalf("strategy event broke continuity: %q", c.View().Session)
+	}
+	if c.Snapshot().Strategy != "watch" {
+		t.Fatalf("strategy = %q", c.Snapshot().Strategy)
 	}
 }
 

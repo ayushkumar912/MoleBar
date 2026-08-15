@@ -4,6 +4,8 @@ package molestatus
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // Parse decodes a single Mole status JSON document.
@@ -39,14 +41,69 @@ func (s *Status) PrimaryDiskPercent() float64 {
 	return -1
 }
 
+// Health returns Mole's health score when the field was present in JSON.
+// A missing key is unavailable; a present zero is a real score.
+func (s *Status) Health() (score int, msg string, ok bool) {
+	if s == nil || s.HealthScore == nil {
+		return 0, "", false
+	}
+	return *s.HealthScore, s.HealthMsg, true
+}
+
 // PrimaryBattery returns the first battery entry and true, or a zero value
 // and false on desktop Macs / machines with no battery reported.
 // Percent is the upstream floating-point value; callers must not truncate it.
 func (s *Status) PrimaryBattery() (percent float64, status string, ok bool) {
+	info, ok := s.PrimaryBatteryInfo()
+	return info.Percent, info.Status, ok
+}
+
+// PrimaryBatteryInfo returns optional battery fields without inventing values.
+func (s *Status) PrimaryBatteryInfo() (BatteryInfo, bool) {
 	if s == nil || len(s.Batteries) == 0 {
-		return 0, "", false
+		return BatteryInfo{}, false
 	}
-	return s.Batteries[0].Percent, s.Batteries[0].Status, true
+	b := s.Batteries[0]
+	info := BatteryInfo{
+		Percent: b.Percent,
+		Status:  b.Status,
+	}
+	if charging, ok := chargingFromStatus(b.Status); ok {
+		info.Charging = &charging
+	}
+	if b.Health != "" {
+		h := b.Health
+		info.Health = &h
+	}
+	if b.CycleCount != 0 {
+		c := b.CycleCount
+		info.CycleCount = &c
+	}
+	if b.Capacity != 0 {
+		c := b.Capacity
+		info.Capacity = &c
+	}
+	return info, true
+}
+
+func chargingFromStatus(status string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "ac", "charging", "charged", "finishing charge":
+		return true, true
+	case "battery", "discharging", "running on battery":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// CPUTemperature returns Mole's CPU temperature in Celsius when present.
+// Non-positive values are treated as unavailable rather than invented.
+func (s *Status) CPUTemperature() (celsius float64, ok bool) {
+	if s == nil || s.Thermal.CPUTemp <= 0 {
+		return 0, false
+	}
+	return s.Thermal.CPUTemp, true
 }
 
 // TotalNetRates sums rx/tx across the network records Mole actually supplied,
@@ -61,4 +118,48 @@ func (s *Status) TotalNetRates() (rxMBs, txMBs float64) {
 		txMBs += n.TxRateMBs
 	}
 	return rxMBs, txMBs
+}
+
+const defaultTopN = 5
+
+// TopCPUProcesses returns up to n processes sorted by CPU descending,
+// then name, then PID. n <= 0 uses 5. Command lines are not included.
+func (s *Status) TopCPUProcesses(n int) []ProcessStat {
+	if s == nil || len(s.TopProcesses) == 0 {
+		return nil
+	}
+	if n <= 0 {
+		n = defaultTopN
+	}
+	out := make([]ProcessStat, 0, len(s.TopProcesses))
+	for _, p := range s.TopProcesses {
+		out = append(out, ProcessStat{
+			PID:        p.PID,
+			Name:       p.Name,
+			CPUPercent: p.CPU,
+			Memory:     p.MemoryBytes,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CPUPercent != out[j].CPUPercent {
+			return out[i].CPUPercent > out[j].CPUPercent
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].PID < out[j].PID
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+// MaxProcessCPU is the highest CPU percent among top processes, if any.
+func (s *Status) MaxProcessCPU() (float64, bool) {
+	procs := s.TopCPUProcesses(0)
+	if len(procs) == 0 {
+		return 0, false
+	}
+	return procs[0].CPUPercent, true
 }

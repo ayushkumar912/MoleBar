@@ -122,3 +122,63 @@ func TestNoNegativeAccumulatedResult(t *testing.T) {
 		t.Fatalf("negative totals %v/%v", rx, tx)
 	}
 }
+
+func TestPeakRatesIncludeFirstSample(t *testing.T) {
+	m := New(DefaultMaxGap)
+	m.Observe(t0(), 4, 1)
+	snap := m.Snapshot()
+	if snap.PeakRX != 4 || snap.PeakTX != 1 {
+		t.Fatalf("first-sample peaks = %+v", snap)
+	}
+	m.Observe(t0().Add(time.Second), 2, 8)
+	snap = m.Snapshot()
+	if snap.PeakRX != 4 || snap.PeakTX != 8 {
+		t.Fatalf("peaks = %+v", snap)
+	}
+}
+
+func TestAveragesAndDuration(t *testing.T) {
+	m := New(DefaultMaxGap)
+	m.Observe(t0(), 1, 0.5)
+	if m.Snapshot().Duration != 0 {
+		t.Fatalf("first sample duration = %s", m.Snapshot().Duration)
+	}
+	m.Observe(t0().Add(2*time.Second), 1, 0.5)
+	snap := m.Snapshot()
+	if snap.Duration != 2*time.Second {
+		t.Fatalf("duration = %s", snap.Duration)
+	}
+	if snap.AvgRX != 1 || snap.AvgTX != 0.5 {
+		t.Fatalf("averages = %v/%v", snap.AvgRX, snap.AvgTX)
+	}
+}
+
+func TestResetClearsPeaksAndDuration(t *testing.T) {
+	m := New(DefaultMaxGap)
+	m.Observe(t0(), 5, 5)
+	m.Observe(t0().Add(time.Second), 5, 5)
+	m.Reset()
+	snap := m.Snapshot()
+	if snap.PeakRX != 0 || snap.PeakTX != 0 || snap.Duration != 0 || snap.AvgRX != 0 {
+		t.Fatalf("after reset %+v", snap)
+	}
+}
+
+func TestInvalidatePreservesPeaksAndDuration(t *testing.T) {
+	m := New(DefaultMaxGap)
+	m.Observe(t0(), 3, 1)
+	m.Observe(t0().Add(2*time.Second), 3, 1)
+	before := m.Snapshot()
+	m.Invalidate()
+	after := m.Snapshot()
+	if after.PeakRX != before.PeakRX || after.Duration != before.Duration {
+		t.Fatalf("invalidate changed snapshot: before=%+v after=%+v", before, after)
+	}
+	m.Observe(t0().Add(10*time.Second), 9, 1)
+	if m.Snapshot().PeakRX != 9 {
+		t.Fatalf("peak after re-prime = %v", m.Snapshot().PeakRX)
+	}
+	if m.Snapshot().Duration != 10*time.Second {
+		t.Fatalf("duration after re-prime = %s", m.Snapshot().Duration)
+	}
+}

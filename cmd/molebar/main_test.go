@@ -58,7 +58,9 @@ func TestParseRuntimeCLITitleDoesNotPersist(t *testing.T) {
 func TestParseRuntimeUsesSavedPreference(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "display_mode")
 	store := config.NewFileStore(path)
-	if err := store.Save(config.DisplayModeBoth); err != nil {
+	prefs := config.DefaultPreferences()
+	prefs.ApplyDisplayMode(config.DisplayModeBoth)
+	if err := store.Save(prefs); err != nil {
 		t.Fatal(err)
 	}
 	fs := flag.NewFlagSet("molebar", flag.ContinueOnError)

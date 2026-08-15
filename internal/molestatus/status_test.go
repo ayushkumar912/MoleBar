@@ -22,8 +22,9 @@ func TestParseSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.HealthScore != 92 || s.HealthMsg != "Excellent" {
-		t.Fatalf("health = %d %q", s.HealthScore, s.HealthMsg)
+	score, msg, ok := s.Health()
+	if !ok || score != 92 || msg != "Excellent" {
+		t.Fatalf("health = %d %q ok=%v", score, msg, ok)
 	}
 	if s.CPU.Usage != 12.2 || s.CPU.Load1 != 2.94 {
 		t.Fatalf("cpu = %+v", s.CPU)
@@ -109,6 +110,72 @@ func TestEmptyOptionalArrays(t *testing.T) {
 	rx, tx := s.TotalNetRates()
 	if rx != 0 || tx != 0 {
 		t.Fatalf("empty network rates %v/%v", rx, tx)
+	}
+}
+
+func TestHealthMissingIsUnavailable(t *testing.T) {
+	s, err := Parse([]byte(`{"cpu":{"usage":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.Health(); ok {
+		t.Fatal("missing health_score should be unavailable")
+	}
+}
+
+func TestCPUTemperature(t *testing.T) {
+	s, err := Parse([]byte(`{"thermal":{"cpu_temp":58.5}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := s.CPUTemperature()
+	if !ok || c != 58.5 {
+		t.Fatalf("temp = %v ok=%v", c, ok)
+	}
+	s2, err := Parse([]byte(`{"thermal":{"cpu_temp":0}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s2.CPUTemperature(); ok {
+		t.Fatal("zero temp should be unavailable")
+	}
+}
+
+func TestPrimaryBatteryInfoOptionalFields(t *testing.T) {
+	s, err := Parse([]byte(baseJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, ok := s.PrimaryBatteryInfo()
+	if !ok || info.Health == nil || *info.Health != "Good" || info.CycleCount == nil || *info.CycleCount != 100 {
+		t.Fatalf("info = %+v ok=%v", info, ok)
+	}
+	if info.Charging == nil || !*info.Charging {
+		t.Fatalf("AC should be charging=%v", info.Charging)
+	}
+}
+
+func TestTopCPUProcessesDeterministic(t *testing.T) {
+	s, err := Parse([]byte(`{
+		"top_processes": [
+			{"pid": 3, "name": "chrome", "cpu": 10, "memory_bytes": 1},
+			{"pid": 1, "name": "cursor", "cpu": 40, "memory_bytes": 2},
+			{"pid": 2, "name": "aaa", "cpu": 40, "memory_bytes": 3}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.TopCPUProcesses(2)
+	if len(got) != 2 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].Name != "aaa" || got[0].PID != 2 || got[1].Name != "cursor" {
+		t.Fatalf("order = %#v", got)
+	}
+	max, ok := s.MaxProcessCPU()
+	if !ok || max != 40 {
+		t.Fatalf("max = %v ok=%v", max, ok)
 	}
 }
 

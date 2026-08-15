@@ -1,6 +1,6 @@
 // Command molebar is a macOS menu-bar widget that reads Mole
 // (`mo status --watch` or `mo status --json`, https://github.com/tw93/Mole)
-// and shows CPU, memory, swap, disk, battery, and health-score in the menu bar.
+// and shows CPU, memory, swap, disk, battery, health, and related metrics.
 //
 // Requires the `mo` CLI to be installed and on $PATH:
 //
@@ -9,18 +9,28 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/getlantern/systray"
 
+	"github.com/ayush-kumar912/molebar/internal/alerts"
 	"github.com/ayush-kumar912/molebar/internal/app"
 	"github.com/ayush-kumar912/molebar/internal/config"
 	"github.com/ayush-kumar912/molebar/internal/molestatus"
+	"github.com/ayush-kumar912/molebar/internal/platform"
 	"github.com/ayush-kumar912/molebar/internal/presentation"
 )
+
+// version is stamped by the linker from the git tag when building a release.
+var version = "dev"
 
 func main() {
 	store := config.NewFileStore("")
@@ -37,17 +47,24 @@ func main() {
 func parseRuntime(fs *flag.FlagSet, args []string, store config.Store) (app.Config, error) {
 	interval := fs.Duration("interval", 5*time.Second, "refresh interval")
 	binPath := fs.String("mo-bin", "", `path to the "mo" executable (default: resolve "mo" from $PATH)`)
-	titleMode := fs.String("title", "", `what to show in the menu bar title: "sys" (CPU/MEM), "net" (↓/↑ rates), or "both"`)
+	titleMode := fs.String("title", "", `what to show in the menu bar title: "sys" (CPU/RAM), "net" (↓/↑ rates), or "both"`)
 	if err := fs.Parse(args); err != nil {
 		return app.Config{}, err
 	}
 	if err := validateInterval(*interval); err != nil {
 		return app.Config{}, err
 	}
+	osName, osVersion, arch := platformInfo()
+	prefs := config.ResolvePreferences(store, *titleMode)
 	return app.Config{
 		Interval:    *interval,
 		BinPath:     molestatus.ResolveBinary(*binPath),
-		DisplayMode: config.ResolveDisplayMode(store, *titleMode),
+		DisplayMode: prefs.DisplayMode(),
+		Preferences: prefs,
+		Version:     version,
+		OSName:      osName,
+		OSVersion:   osVersion,
+		Arch:        arch,
 	}, nil
 }
 
@@ -58,77 +75,45 @@ func validateInterval(d time.Duration) error {
 	return nil
 }
 
-type menu struct {
-	cpu, mem, swap, disk, batt                   *systray.MenuItem
-	down, up, session, sessionReset              *systray.MenuItem
-	display, displaySys, displayNet, displayBoth *systray.MenuItem
-	health, updated                              *systray.MenuItem
-	refresh, quit                                *systray.MenuItem
-}
-
-func newMenu() *menu {
-	m := &menu{}
-	m.cpu = systray.AddMenuItem("CPU: —", "")
-	m.mem = systray.AddMenuItem("Memory: —", "")
-	m.swap = systray.AddMenuItem("Swap: —", "")
-	m.disk = systray.AddMenuItem("Disk: —", "")
-	m.batt = systray.AddMenuItem("Battery: —", "")
-	systray.AddSeparator()
-	m.down = systray.AddMenuItem("↓ —", "Current download rate")
-	m.up = systray.AddMenuItem("↑ —", "Current upload rate")
-	m.session = systray.AddMenuItem("Session: —", "Estimated data transferred since molebar launched")
-	m.sessionReset = systray.AddMenuItem("Reset session totals", "Zero out the session download/upload counters")
-	systray.AddSeparator()
-	m.display = systray.AddMenuItem("Display: System", "Choose what to show in the menu bar")
-	m.displaySys = m.display.AddSubMenuItem("System", "Show CPU and memory")
-	m.displayNet = m.display.AddSubMenuItem("Network", "Show download/upload speed")
-	m.displayBoth = m.display.AddSubMenuItem("Both", "Show CPU, memory, and network")
-	systray.AddSeparator()
-	m.health = systray.AddMenuItem("Health: —", "")
-	m.updated = systray.AddMenuItem("Updated: —", "")
-	m.updated.Disable()
-	systray.AddSeparator()
-	m.refresh = systray.AddMenuItem("Refresh now", "Fetch mo status immediately")
-	m.quit = systray.AddMenuItem("Quit", "Quit molebar")
-	return m
-}
-
-func apply(m *menu, vm presentation.ViewModel) {
-	systray.SetTitle(vm.Title)
-	systray.SetTooltip(vm.Tooltip)
-	m.cpu.SetTitle(vm.CPU)
-	m.mem.SetTitle(vm.Memory)
-	m.swap.SetTitle(vm.Swap)
-	m.disk.SetTitle(vm.Disk)
-	m.batt.SetTitle(vm.Battery)
-	m.down.SetTitle(vm.Down)
-	m.up.SetTitle(vm.Up)
-	m.session.SetTitle(vm.Session)
-	m.display.SetTitle(vm.DisplayLabel)
-	m.health.SetTitle(vm.Health)
-	m.updated.SetTitle(vm.Updated)
-	setChecked(m.displaySys, vm.ModeSys)
-	setChecked(m.displayNet, vm.ModeNet)
-	setChecked(m.displayBoth, vm.ModeBoth)
-}
-
-func setChecked(item *systray.MenuItem, on bool) {
-	if on {
-		item.Check()
-	} else {
-		item.Uncheck()
+func platformInfo() (osName, osVersion, arch string) {
+	osName = runtime.GOOS
+	arch = runtime.GOARCH
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("sw_vers", "-productVersion")
+		if out, err := cmd.Output(); err == nil {
+			osVersion = strings.TrimSpace(string(out))
+			return osName, osVersion, arch
+		}
 	}
+	return osName, "", arch
 }
 
 func onReady(ctx context.Context, cancel context.CancelFunc, cfg app.Config, store config.Store) {
 	ctrl := app.New(cfg, store, nil)
+	login := platform.NewDarwinLoginItem("")
+	syncLoginState(ctrl, login)
+
+	detectCtx, detectCancel := context.WithTimeout(ctx, 3*time.Second)
+	caps, err := molestatus.Detect(detectCtx, cfg.BinPath)
+	detectCancel()
+	if err != nil {
+		log.Printf("molebar: capability detection: %v", err)
+	}
+	ctrl.SetCapabilities(caps)
+
 	m := newMenu()
+	platform.KeepMenuOpenOnToggles()
+	platform.SetMenuClosedHandler(flushTray)
 	apply(m, ctrl.View())
 
-	src := molestatus.NewSource(molestatus.Options{
+	opts := molestatus.Options{
 		Bin:      cfg.BinPath,
 		Interval: cfg.Interval,
-	})
+	}
+	if err == nil {
+		opts.Caps = &caps
+	}
+	src := molestatus.NewSource(opts)
 	updates := make(chan molestatus.Result, 4)
 	go src.Run(ctx, func(r molestatus.Result) {
 		select {
@@ -137,28 +122,73 @@ func onReady(ctx context.Context, cancel context.CancelFunc, cfg app.Config, sto
 		}
 	})
 
+	notifyCh := make(chan platform.Notification, 4)
+	go runNotifier(ctx, platform.DarwinNotifier{}, notifyCh)
+	clip := platform.PBCopy{}
+	save := platform.DarwinSaveDialog{}
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case r := <-updates:
-				ctrl.OnResult(r)
+				enqueueNotify(notifyCh, ctrl.OnResult(r))
 				apply(m, ctrl.View())
 			case <-m.refresh.ClickedCh:
-				ctrl.Refresh(ctx)
+				enqueueNotify(notifyCh, ctrl.Refresh(ctx))
 				apply(m, ctrl.View())
 			case <-m.sessionReset.ClickedCh:
 				ctrl.ResetSession()
 				apply(m, ctrl.View())
-			case <-m.displaySys.ClickedCh:
-				ctrl.SetDisplayMode(config.DisplayModeSys)
+			case <-m.alertsToggle.ClickedCh:
+				ctrl.SetAlertsEnabled(!ctrl.View().AlertsEnabled)
 				apply(m, ctrl.View())
-			case <-m.displayNet.ClickedCh:
-				ctrl.SetDisplayMode(config.DisplayModeNet)
+			case <-m.launchAtLogin.ClickedCh:
+				toggleLogin(ctrl, login)
 				apply(m, ctrl.View())
-			case <-m.displayBoth.ClickedCh:
-				ctrl.SetDisplayMode(config.DisplayModeBoth)
+			case <-m.copySummary.ClickedCh:
+				copySummary(ctx, clip, ctrl.View())
+			case <-m.exportDiag.ClickedCh:
+				exportDiagnostics(ctx, save, ctrl.View())
+			case <-m.profiles[string(config.ProfileMinimal)].ClickedCh:
+				ctrl.SetProfile(string(config.ProfileMinimal))
+				apply(m, ctrl.View())
+			case <-m.profiles[string(config.ProfileDeveloper)].ClickedCh:
+				ctrl.SetProfile(string(config.ProfileDeveloper))
+				apply(m, ctrl.View())
+			case <-m.profiles[string(config.ProfileNetwork)].ClickedCh:
+				ctrl.SetProfile(string(config.ProfileNetwork))
+				apply(m, ctrl.View())
+			case <-m.profiles[string(config.ProfileBattery)].ClickedCh:
+				ctrl.SetProfile(string(config.ProfileBattery))
+				apply(m, ctrl.View())
+			case <-m.profiles[string(config.ProfileFull)].ClickedCh:
+				ctrl.SetProfile(string(config.ProfileFull))
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricCPU].ClickedCh:
+				ctrl.ToggleMetric(config.MetricCPU)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricMemory].ClickedCh:
+				ctrl.ToggleMetric(config.MetricMemory)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricRX].ClickedCh:
+				ctrl.ToggleMetric(config.MetricRX)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricTX].ClickedCh:
+				ctrl.ToggleMetric(config.MetricTX)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricHealth].ClickedCh:
+				ctrl.ToggleMetric(config.MetricHealth)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricBattery].ClickedCh:
+				ctrl.ToggleMetric(config.MetricBattery)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricTemperature].ClickedCh:
+				ctrl.ToggleMetric(config.MetricTemperature)
+				apply(m, ctrl.View())
+			case <-m.metrics[config.MetricDisk].ClickedCh:
+				ctrl.ToggleMetric(config.MetricDisk)
 				apply(m, ctrl.View())
 			case <-m.quit.ClickedCh:
 				cancel()
@@ -167,4 +197,78 @@ func onReady(ctx context.Context, cancel context.CancelFunc, cfg app.Config, sto
 			}
 		}
 	}()
+}
+
+func runNotifier(ctx context.Context, n platform.Notifier, ch <-chan platform.Notification) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case note := <-ch:
+			nctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			_ = n.Notify(nctx, note)
+			cancel()
+		}
+	}
+}
+
+func enqueueNotify(ch chan<- platform.Notification, events []alerts.AlertEvent) {
+	for _, ev := range events {
+		if ev.State != alerts.StateFiring && ev.State != alerts.StateRecovered {
+			continue
+		}
+		n := alerts.NotificationFromEvent(ev)
+		select {
+		case ch <- platform.Notification{Title: n.Title, Body: n.Body}:
+		default:
+		}
+	}
+}
+
+func syncLoginState(ctrl *app.Controller, login platform.LoginItemManager) {
+	on, err := login.Enabled()
+	supported := !errors.Is(err, platform.ErrUnsupported)
+	if err != nil {
+		on = false
+	}
+	ctrl.SetLaunchAtLoginState(on, supported)
+}
+
+func toggleLogin(ctrl *app.Controller, login platform.LoginItemManager) {
+	cur, err := login.Enabled()
+	if errors.Is(err, platform.ErrUnsupported) {
+		ctrl.SetLaunchAtLoginState(false, false)
+		return
+	}
+	want := !cur
+	if err := login.SetEnabled(want); err != nil {
+		log.Printf("molebar: launch at login: %v", err)
+	} else {
+		ctrl.SetLaunchAtLoginPref(want)
+	}
+	on, err := login.Enabled()
+	ctrl.SetLaunchAtLoginState(on && err == nil, !errors.Is(err, platform.ErrUnsupported))
+}
+
+func copySummary(ctx context.Context, clip platform.Clipboard, vm presentation.ViewModel) {
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := clip.Copy(cctx, vm.SystemSummary); err != nil {
+		log.Printf("molebar: copy summary: %v", err)
+	}
+}
+
+func exportDiagnostics(ctx context.Context, chooser platform.SavePathChooser, vm presentation.ViewModel) {
+	path, err := chooser.Choose(ctx, "molebar-diagnostics.txt")
+	if err != nil {
+		if errors.Is(err, platform.ErrUnsupported) {
+			path = platform.DefaultDiagnosticsPath()
+		} else {
+			log.Printf("molebar: export dialog: %v", err)
+			return
+		}
+	}
+	if err := platform.WriteDiagnostics(path, vm.Diagnostics); err != nil {
+		log.Printf("molebar: export diagnostics: %v", err)
+	}
 }
