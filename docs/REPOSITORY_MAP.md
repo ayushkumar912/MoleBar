@@ -73,6 +73,11 @@ Annotated tree of tracked sources. Omits `.git`, `build/`, `dist/`, and other ge
 │   ├── workflows/build.yml  # tag v* → .app.zip + tarball release
 │   └── dependabot.yml
 │
+├── Formula/
+│   └── molebar.rb           # Homebrew tap formula (source tarball + make app)
+├── scripts/
+│   └── update-homebrew-formula.sh  # refresh formula url/sha256 after a release
+│
 ├── docs/                    # this developer documentation set
 ├── Makefile
 ├── go.mod / go.sum

@@ -55,6 +55,8 @@ jobs:
           mkdir -p dist
           ditto -c -k --keepParent --norsrc --noextattr --noqtn build/MoleBar.app "dist/MoleBar-${VERSION}.app.zip"
           git archive --format=tar.gz --prefix="molebar-${VERSION}/" -o "dist/molebar-${VERSION}.tar.gz" HEAD
+          echo "Release artifact SHA256 (update Formula/molebar.rb after this release is published):"
+          shasum -a 256 "dist/MoleBar-${VERSION}.app.zip" "dist/molebar-${VERSION}.tar.gz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

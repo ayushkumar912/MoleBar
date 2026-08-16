@@ -25,6 +25,27 @@ CPU 12% | RAM 67%
 └── Quit
 ```
 
+## Install
+
+MoleBar is not in homebrew-core. Install it from this repository's tap,
+which builds the latest stable source release (Xcode Command Line Tools
+required for the CGO build):
+
+```sh
+brew tap ayushkumar912/molebar https://github.com/ayushkumar912/MoleBar
+brew trust --formula ayushkumar912/molebar/molebar
+brew install molebar
+```
+
+`brew trust` is required on Homebrew 6+ for third-party taps. That
+installs the `molebar` command and `MoleBar.app`, and pulls in
+[Mole](https://github.com/tw93/Mole) (`mo`) as a dependency. Launch the
+menu-bar widget with `open "$(brew --prefix molebar)/MoleBar.app"` or by
+running `molebar`.
+
+`brew install molebar` without the tap above is not a published
+homebrew-core package.
+
 ## Requirements
 
 - **MoleBar** requires macOS 11+ (see `LSMinimumSystemVersion` in the app bundle).

@@ -97,7 +97,7 @@ Variables: `APP_NAME=MoleBar`, `BIN_NAME=molebar`, `MACOSX_DEPLOYMENT_TARGET=11.
 | Workflow file | Workflow `name` | Trigger | Purpose | Important steps |
 | ------------- | --------------- | ------- | ------- | --------------- |
 | `ci.yml` | `ci` | `push` to `main`; `pull_request` | Verify | checkout; setup-go **1.21**; `gofmt -l`; `go mod verify`; `go test ./...`; `go vet ./...`; `go test -race ./...` |
-| `build.yml` | `release` | `push` tags `v*` | Build and attach GitHub Release | checkout `fetch-depth: 0`; setup-go **1.21**; `VERSION=${GITHUB_REF_NAME#v}`; `go test ./...`; try `make app UNIVERSAL=1 VERSION=...` else `make app VERSION=...`; print `file` / `lipo` / PlistBuddy versions; optional `make sign` if `secrets.CODESIGN_IDENTITY` non-empty; `ditto` zip + `git archive` tarball; `upload-artifact` name `MoleBar`; `softprops/action-gh-release` with those two files, `generate_release_notes: true` |
+| `build.yml` | `release` | `push` tags `v*` | Build and attach GitHub Release | checkout `fetch-depth: 0`; setup-go **1.21**; `VERSION=${GITHUB_REF_NAME#v}`; `go test ./...`; try `make app UNIVERSAL=1 VERSION=...` else `make app VERSION=...`; print `file` / `lipo` / PlistBuddy versions; optional `make sign` if `secrets.CODESIGN_IDENTITY` non-empty; `ditto` zip + `git archive` tarball; print artifact SHA256 (for `Formula/molebar.rb`); `upload-artifact` name `MoleBar`; `softprops/action-gh-release` with those two files, `generate_release_notes: true` |
 
 `.github/dependabot.yml`: weekly `gomod` and `github-actions`.
 
@@ -164,6 +164,39 @@ GitHub Actions `release` job produces:
 Uploaded as artifact `MoleBar` and attached to the GitHub Release for that tag.
 
 The zip is whatever architecture `make app` produced (universal if that succeeded, else native). `make dist` locally does **not** fall back to native.
+
+The current GitHub Release `.app.zip` may be native-only (v0.1.3 is arm64). Do not publish a Homebrew Cask from that zip unless a universal or per-architecture artifact exists; a Cask of an arm64-only zip would drop Intel macOS.
+
+## Homebrew formula
+
+`Formula/molebar.rb` is the tap formula for this application repository. It
+downloads the immutable GitHub Release source tarball
+(`molebar-<VERSION>.tar.gz`), builds with `make app VERSION=<version>`, and
+installs `MoleBar.app` plus a `molebar` wrapper. Runtime dependency: `mole`.
+Build dependency: `go`. macOS 11+ (`:big_sur`). Linux is not declared.
+
+This repo is not `homebrew-molebar`. Users tap it with the clone URL:
+
+```sh
+brew tap ayushkumar912/molebar https://github.com/ayushkumar912/MoleBar
+brew trust --formula ayushkumar912/molebar/molebar
+brew install molebar
+```
+
+`brew trust` is required on Homebrew 6+ for third-party taps.
+
+After a `v*` tag produces the Release tarball, refresh the formula checksum
+from that published asset (do not invent a SHA256):
+
+```sh
+scripts/update-homebrew-formula.sh 0.1.3
+```
+
+Then commit the updated `Formula/molebar.rb`. The release job prints
+`shasum -a 256` for both artifacts to make that step checkable.
+
+homebrew-core submission is a separate external PR; committing the formula
+here does not make `brew install molebar` work without the tap.
 
 ## Release Checklist
 
